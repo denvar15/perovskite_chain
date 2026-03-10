@@ -1,10 +1,14 @@
 {
-  "name": "perovskite_server",
+  "name": "perovskite_chain",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Battery voltage sensor → server → Pinata IPFS → Chainlink → ERC721 low-voltage alert",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "compile": "hardhat compile",
+    "deploy": "hardhat run scripts/deploy.js --network sepolia",
+    "request-voltage-check": "node scripts/requestVoltageCheck.js"
   },
   "keywords": [],
   "author": "",
@@ -12,5 +16,11 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@chainlink/contracts": "^1.5.0",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0",
+    "@openzeppelin/contracts": "^5.0.2"
   }
 }
