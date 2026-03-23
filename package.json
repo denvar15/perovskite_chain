@@ -8,6 +8,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "compile": "hardhat compile",
     "deploy": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy:polygon-amoy": "hardhat run scripts/deploy-polygon-amoy.js --network polygonAmoy",
     "request-voltage-check": "node scripts/requestVoltageCheck.js"
   },
   "keywords": [],
