@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Solar Panel Voltage Monitor</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
   <style>
     * {
       margin: 0;
@@ -249,6 +250,72 @@
       border-left-color: #28a745;
       color: #155724;
     }
+
+    .critical-warning {
+      display: none;
+      background: #b00020;
+      color: #fff;
+      border: 3px solid #ff6b6b;
+      font-size: 1.15em;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 16px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      animation: pulseWarn 1s infinite;
+    }
+
+    @keyframes pulseWarn {
+      0% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.6); }
+      70% { box-shadow: 0 0 0 16px rgba(255, 0, 0, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }
+    }
+
+    .panel-status-card {
+      margin-top: 20px;
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    }
+
+    .panel-status-title {
+      font-size: 1.2em;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #333;
+    }
+
+    .panel-status-badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.85em;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .panel-status-badge.idle { background: #e9ecef; color: #495057; }
+    .panel-status-badge.running { background: #fff3cd; color: #856404; }
+    .panel-status-badge.ok { background: #d4edda; color: #155724; }
+    .panel-status-badge.warning { background: #f8d7da; color: #721c24; }
+    .panel-status-badge.error { background: #f8d7da; color: #721c24; }
+
+    .bc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .bc-grid input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 0.95em;
+    }
   </style>
 </head>
 <body>
@@ -259,11 +326,14 @@
     </header>
 
     <div id="alertContainer"></div>
+    <div id="criticalWarning" class="critical-warning"></div>
 
     <div class="controls">
       <button class="active" onclick="setAutoRefresh(true)">🔄 Auto-refresh ON</button>
       <button onclick="setAutoRefresh(false)">⏸️ Auto-refresh OFF</button>
       <button onclick="loadData()">🔁 Refresh Now</button>
+      <button onclick="connectWallet()">🦊 Connect MetaMask</button>
+      <button onclick="runPanelCheck()">⛓️ Run Panel Check</button>
     </div>
 
     <div class="dashboard">
@@ -308,12 +378,38 @@
       <canvas id="voltageChart"></canvas>
       <div class="timestamp" id="chartTimestamp"></div>
     </div>
+
+    <div class="panel-status-card">
+      <div class="panel-status-title">New Panel Status</div>
+      <div class="bc-grid">
+        <input id="contractAddressInput" placeholder="Contract address (0x...)" />
+        <input id="ipfsGatewayInput" placeholder="IPFS gateway base (https://gateway.pinata.cloud/ipfs/)" />
+      </div>
+      <div id="panelStatusBadge" class="panel-status-badge idle">IDLE</div>
+      <p id="panelStatusMessage">No checks run yet.</p>
+      <p class="timestamp" id="panelStatusTime"></p>
+      <p class="timestamp" id="dashboardModeLabel"></p>
+    </div>
   </div>
 
   <script>
     let chart = null;
     let autoRefreshInterval = null;
     let autoRefreshEnabled = true;
+    let appConfig = null;
+    let walletAddress = null;
+    function getWeb3ChainId() {
+      return appConfig?.chainId ?? 11155111;
+    }
+    function getWeb3ChainHex() {
+      return appConfig?.chainIdHex ?? "0xaa36a7";
+    }
+    function getWeb3ChainName() {
+      return appConfig?.chainName ?? "Sepolia";
+    }
+    const PANEL_CHECK_ABI = [
+      "function requestVoltageCheck(string ipfsGatewayUrl) external returns (bytes32)"
+    ];
 
     const API_BASE = window.location.origin;
 
@@ -339,6 +435,101 @@
       return date.toLocaleDateString();
     }
 
+    function updateWarningBanner(warning) {
+      const banner = document.getElementById('criticalWarning');
+      if (!warning || !warning.active) {
+        banner.style.display = 'none';
+        banner.textContent = '';
+        return;
+      }
+      banner.style.display = 'block';
+      banner.textContent = warning.message || 'NON-WARRANTY BOARD MALFUNCTION: sudden drop detected.';
+    }
+
+    function updatePanelStatus(panelStatus, mode) {
+      const badge = document.getElementById('panelStatusBadge');
+      const message = document.getElementById('panelStatusMessage');
+      const time = document.getElementById('panelStatusTime');
+      const modeLabel = document.getElementById('dashboardModeLabel');
+
+      const state = panelStatus?.state || 'idle';
+      badge.className = `panel-status-badge ${state}`;
+      badge.textContent = state.toUpperCase();
+      message.textContent = panelStatus?.message || 'No checks run yet.';
+      time.textContent = panelStatus?.checkedAt ? `Last check: ${formatTime(panelStatus.checkedAt)}` : '';
+      modeLabel.textContent = `Data source mode: ${mode || 'unknown'}`;
+    }
+
+    function setPanelStatus(state, message) {
+      updatePanelStatus({
+        state,
+        message,
+        checkedAt: Date.now(),
+      }, appConfig?.mode);
+    }
+
+    function ensureSuffixSlash(url) {
+      if (!url) return '';
+      return url.endsWith('/') ? url : `${url}/`;
+    }
+
+    function shortAddr(addr) {
+      if (!addr) return "not connected";
+      return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+    }
+
+    async function connectWallet() {
+      if (!window.ethereum) {
+        showAlert('MetaMask not found in browser.', 'error');
+        setPanelStatus('error', 'MetaMask not found.');
+        return null;
+      }
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        await provider.send("eth_requestAccounts", []);
+        const network = await provider.getNetwork();
+        if (Number(network.chainId) !== getWeb3ChainId()) {
+          try {
+            await window.ethereum.request({
+              method: "wallet_switchEthereumChain",
+              params: [{ chainId: getWeb3ChainHex() }],
+            });
+          } catch (switchErr) {
+            showAlert(`Please switch MetaMask to ${getWeb3ChainName()}.`, 'error');
+            setPanelStatus('error', `Wrong chain: switch to ${getWeb3ChainName()}.`);
+            return null;
+          }
+        }
+        const signer = await provider.getSigner();
+        walletAddress = await signer.getAddress();
+        showAlert(`Wallet connected: ${shortAddr(walletAddress)}`, 'success');
+        setPanelStatus('ok', `Wallet connected: ${shortAddr(walletAddress)} on ${getWeb3ChainName()}.`);
+        return { provider, signer };
+      } catch (err) {
+        console.error(err);
+        showAlert('Failed to connect MetaMask.', 'error');
+        setPanelStatus('error', 'Failed to connect MetaMask.');
+        return null;
+      }
+    }
+
+    async function loadConfig() {
+      try {
+        const res = await fetch(`${API_BASE}/api/config`);
+        appConfig = await res.json();
+        if (appConfig?.defaultContractAddress) {
+          document.getElementById('contractAddressInput').value = appConfig.defaultContractAddress;
+        }
+        if (appConfig?.defaultIpfsGatewayBase) {
+          document.getElementById('ipfsGatewayInput').value = appConfig.defaultIpfsGatewayBase;
+        } else {
+          document.getElementById('ipfsGatewayInput').value = 'https://gateway.pinata.cloud/ipfs/';
+        }
+      } catch {
+        document.getElementById('ipfsGatewayInput').value = 'https://gateway.pinata.cloud/ipfs/';
+      }
+    }
+
     async function loadData() {
       try {
         const [dataRes, statsRes] = await Promise.all([
@@ -351,6 +542,8 @@
 
         updateStats(stats);
         updateChart(data.data);
+        updateWarningBanner(stats.warning);
+        updatePanelStatus(stats.panelStatus, stats.mode);
 
         if (stats.lastUpdate) {
           document.getElementById('chartTimestamp').textContent =
@@ -380,6 +573,52 @@
 
       document.getElementById('dataCount').textContent =
         stats.count > 0 ? stats.count : '—';
+    }
+
+    async function runPanelCheck() {
+      const contractAddress = document.getElementById('contractAddressInput').value.trim();
+      const gatewayBase = ensureSuffixSlash(document.getElementById('ipfsGatewayInput').value.trim());
+      if (!contractAddress) {
+        showAlert('Enter contract address first.', 'error');
+        setPanelStatus('error', 'Contract address is empty.');
+        return;
+      }
+
+      if (!gatewayBase) {
+        showAlert('Enter IPFS gateway base first.', 'error');
+        setPanelStatus('error', 'IPFS gateway base is empty.');
+        return;
+      }
+
+      try {
+        setPanelStatus('running', 'Loading latest IPFS hash from server...');
+        const ipfsRes = await fetch(`${API_BASE}/ipfs`);
+        const ipfsData = await ipfsRes.json();
+        if (!ipfsData?.lastIpfsHash) {
+          showAlert('No IPFS hash yet. Send data from ESP32 first.', 'error');
+          setPanelStatus('error', 'No IPFS hash available yet.');
+          return;
+        }
+
+        const ipfsUrl = `${gatewayBase}${ipfsData.lastIpfsHash}`;
+        const wallet = await connectWallet();
+        if (!wallet) return;
+
+        setPanelStatus('running', 'Sending transaction to requestVoltageCheck...');
+        const contract = new ethers.Contract(contractAddress, PANEL_CHECK_ABI, wallet.signer);
+        const tx = await contract.requestVoltageCheck(ipfsUrl);
+        setPanelStatus('running', `Transaction sent: ${tx.hash}`);
+        showAlert(`Panel check tx sent: ${tx.hash}`, 'success');
+
+        await tx.wait(1);
+        setPanelStatus('ok', `New Panel Status: on-chain panel check requested. Tx confirmed: ${tx.hash}`);
+        showAlert(`Panel check transaction confirmed on ${getWeb3ChainName()}.`, 'success');
+      } catch (error) {
+        console.error('Panel check error:', error);
+        const msg = error?.shortMessage || error?.message || 'Failed to run panel check';
+        setPanelStatus('error', msg);
+        showAlert(msg, 'error');
+      }
     }
 
     function updateChart(data) {
@@ -529,6 +768,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+      loadConfig();
       setAutoRefresh(true);
     });
   </script>
