@@ -230,6 +230,15 @@ async function chooseModeAtStartup() {
     return;
   }
 
+  // Render, Docker, systemd, etc. have no interactive TTY — readline would exit or hang.
+  if (!process.stdin.isTTY) {
+    sourceMode = "real";
+    console.log(
+      "Non-interactive startup: using real mode (ESP POST /update). Set DASHBOARD_MODE=real or synthetic explicitly."
+    );
+    return;
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
