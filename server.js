@@ -16,6 +16,7 @@ const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const PINATA_JWT = process.env.PINATA_JWT || "";
 const PINATA_PIN_JSON_URL = "https://api.pinata.cloud/pinning/pinJSONToIPFS";
+const ALLOW_UNSIGNED_PINATA = String(process.env.ALLOW_UNSIGNED_PINATA || "").toLowerCase() === "true";
 const DEFAULT_CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "";
 const DEFAULT_IPFS_GATEWAY_BASE = process.env.IPFS_GATEWAY_BASE || "https://gateway.pinata.cloud/ipfs/";
 // Dashboard MetaMask target chain (Sepolia default; use Polygon Amoy for README_polygon.md flow)
@@ -230,6 +231,15 @@ async function chooseModeAtStartup() {
     return;
   }
 
+  // Hosted environments (Render/Docker/systemd) are non-interactive.
+  if (!process.stdin.isTTY) {
+    sourceMode = "real";
+    console.log(
+      "Non-interactive startup detected; defaulting DASHBOARD_MODE to real."
+    );
+    return;
+  }
+
   // Render, Docker, systemd, etc. have no interactive TTY — readline would exit or hang.
   if (!process.stdin.isTTY) {
     sourceMode = "real";
@@ -285,8 +295,15 @@ app.post("/update", async (req, res) => {
     lastIpfsHash = ipfsResult.IpfsHash;
     lastPinError = ipfsResult.error || null;
   } else {
-    console.warn("No signature/publicKey - not pinning to IPFS");
-    lastPinError = "No signature";
+    if (ALLOW_UNSIGNED_PINATA) {
+      console.warn("No signature/publicKey - pinning unsigned payload (ALLOW_UNSIGNED_PINATA=true)");
+      ipfsResult = await pinToPinata(body);
+      lastIpfsHash = ipfsResult.IpfsHash;
+      lastPinError = ipfsResult.error || null;
+    } else {
+      console.warn("No signature/publicKey - not pinning to IPFS");
+      lastPinError = "No signature";
+    }
   }
 
   pushDataPoint(body, "real", verified, ipfsResult.IpfsHash);
